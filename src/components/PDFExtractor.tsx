@@ -1,10 +1,10 @@
-
 import React, { useState, useCallback } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Upload, FileText, Table, Image, Download, Check, Star } from 'lucide-react';
+import { Upload, FileText, Table, Image, Download, Check, Star, AlertCircle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { extractPDFContent, ExtractedContent } from '@/utils/pdfExtractor';
 
 interface ExtractionOptions {
   text: boolean;
@@ -21,7 +21,8 @@ const PDFExtractor = () => {
     images: false,
   });
   const [isProcessing, setIsProcessing] = useState(false);
-  const [extractedContent, setExtractedContent] = useState<any>(null);
+  const [extractedContent, setExtractedContent] = useState<ExtractedContent | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const { toast } = useToast();
 
   const handleDrag = useCallback((e: React.DragEvent) => {
@@ -43,6 +44,8 @@ const PDFExtractor = () => {
       const droppedFile = e.dataTransfer.files[0];
       if (droppedFile.type === 'application/pdf') {
         setFile(droppedFile);
+        setExtractedContent(null); // Clear previous results
+        setError(null);
         toast({
           title: "PDF uploaded successfully!",
           description: `${droppedFile.name} is ready for extraction.`,
@@ -62,6 +65,8 @@ const PDFExtractor = () => {
       const selectedFile = e.target.files[0];
       if (selectedFile.type === 'application/pdf') {
         setFile(selectedFile);
+        setExtractedContent(null); // Clear previous results
+        setError(null);
         toast({
           title: "PDF uploaded successfully!",
           description: `${selectedFile.name} is ready for extraction.`,
@@ -79,21 +84,45 @@ const PDFExtractor = () => {
   const handleExtraction = async () => {
     if (!file) return;
     
+    console.log('Starting extraction process...');
     setIsProcessing(true);
+    setError(null);
+    setExtractedContent(null);
     
-    // Simulate processing delay
-    setTimeout(() => {
-      setExtractedContent({
-        text: extractionOptions.text ? "Sample extracted text content..." : null,
-        tables: extractionOptions.tables ? [["Header 1", "Header 2"], ["Data 1", "Data 2"]] : null,
-        images: extractionOptions.images ? ["image1.jpg", "image2.jpg"] : null,
-      });
-      setIsProcessing(false);
+    try {
+      const content = await extractPDFContent(file, extractionOptions);
+      console.log('Extraction result:', content);
+      
+      setExtractedContent(content);
       toast({
         title: "Extraction completed!",
-        description: "Your content has been successfully extracted.",
+        description: `Successfully extracted content from ${content.pageCount} page(s).`,
       });
-    }, 2000);
+    } catch (err) {
+      console.error('Extraction failed:', err);
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
+      setError(errorMessage);
+      toast({
+        title: "Extraction failed",
+        description: errorMessage,
+        variant: "destructive",
+      });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const downloadContent = (content: string, filename: string, type: string) => {
+    console.log('Downloading content:', filename);
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url); // Clean up immediately
   };
 
   const toggleOption = (option: keyof ExtractionOptions) => {
@@ -177,7 +206,11 @@ const PDFExtractor = () => {
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => setFile(null)}
+                        onClick={() => {
+                          setFile(null);
+                          setExtractedContent(null);
+                          setError(null);
+                        }}
                       >
                         Remove
                       </Button>
@@ -259,6 +292,19 @@ const PDFExtractor = () => {
               </Card>
             )}
 
+            {/* Error Display */}
+            {error && (
+              <Card className="p-6 border-red-200 bg-red-50">
+                <div className="flex items-start space-x-3">
+                  <AlertCircle className="h-5 w-5 text-red-500 mt-0.5" />
+                  <div>
+                    <h3 className="font-medium text-red-900">Extraction Failed</h3>
+                    <p className="text-sm text-red-700 mt-1">{error}</p>
+                  </div>
+                </div>
+              </Card>
+            )}
+
             {/* Results */}
             {extractedContent && (
               <Card className="p-6">
@@ -268,38 +314,67 @@ const PDFExtractor = () => {
                     <div className="bg-gray-50 p-4 rounded-lg">
                       <div className="flex items-center justify-between mb-2">
                         <p className="font-medium">Text Content</p>
-                        <Button variant="outline" size="sm">
+                        <Button 
+                          variant="outline" 
+                          size="sm"
+                          onClick={() => downloadContent(extractedContent.text!, `${file?.name || 'extracted'}-text.txt`, 'text/plain')}
+                        >
                           <Download className="h-3 w-3 mr-1" />
                           TXT
                         </Button>
                       </div>
-                      <p className="text-sm text-gray-600 truncate">{extractedContent.text}</p>
+                      <div className="max-h-40 overflow-y-auto">
+                        <p className="text-sm text-gray-600 whitespace-pre-wrap">{extractedContent.text}</p>
+                      </div>
                     </div>
                   )}
                   
                   {extractedContent.tables && (
                     <div className="bg-gray-50 p-4 rounded-lg">
                       <div className="flex items-center justify-between mb-2">
-                        <p className="font-medium">Tables ({extractedContent.tables.length})</p>
-                        <Button variant="outline" size="sm">
+                        <p className="font-medium">Tables ({extractedContent.tables.length} rows)</p>
+                        <Button 
+                          variant="outline" 
+                          size="sm"
+                          onClick={() => downloadContent(
+                            extractedContent.tables!.map(row => row.join(',')).join('\n'),
+                            `${file?.name || 'extracted'}-tables.csv`,
+                            'text/csv'
+                          )}
+                        >
                           <Download className="h-3 w-3 mr-1" />
                           CSV
                         </Button>
                       </div>
-                      <p className="text-sm text-gray-600">Structured data ready for export</p>
+                      <div className="max-h-40 overflow-y-auto">
+                        <div className="text-sm text-gray-600">
+                          {extractedContent.tables.slice(0, 3).map((row, idx) => (
+                            <div key={idx} className="border-b pb-1 mb-1">
+                              {row.join(' | ')}
+                            </div>
+                          ))}
+                          {extractedContent.tables.length > 3 && (
+                            <p className="text-xs text-gray-500">... and {extractedContent.tables.length - 3} more rows</p>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   )}
                   
                   {extractedContent.images && (
                     <div className="bg-gray-50 p-4 rounded-lg">
                       <div className="flex items-center justify-between mb-2">
-                        <p className="font-medium">Images ({extractedContent.images.length})</p>
-                        <Button variant="outline" size="sm">
+                        <p className="font-medium">Images ({extractedContent.images.length} found)</p>
+                        <Button variant="outline" size="sm" disabled>
                           <Download className="h-3 w-3 mr-1" />
                           ZIP
                         </Button>
                       </div>
-                      <p className="text-sm text-gray-600">All images extracted successfully</p>
+                      <div className="text-sm text-gray-600">
+                        {extractedContent.images.map((img, idx) => (
+                          <div key={idx}>{img}</div>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -309,6 +384,21 @@ const PDFExtractor = () => {
 
           {/* Sidebar */}
           <div className="space-y-6">
+            {/* Privacy Notice */}
+            <Card className="p-6 bg-green-50 border-green-200">
+              <div className="flex items-start space-x-3">
+                <div className="flex-shrink-0 w-6 h-6 bg-green-100 rounded-full flex items-center justify-center mt-0.5">
+                  <Check className="h-3 w-3 text-green-600" />
+                </div>
+                <div>
+                  <h4 className="font-medium text-green-900">100% Private & Secure</h4>
+                  <p className="text-sm text-green-700 mt-1">
+                    Your PDFs are processed locally in your browser. No data is stored or sent to servers.
+                  </p>
+                </div>
+              </div>
+            </Card>
+
             {/* Upgrade Card */}
             <Card className="p-6 bg-gradient-to-br from-primary/5 to-blue-50 border-primary/20">
               <div className="text-center space-y-4">
@@ -338,7 +428,7 @@ const PDFExtractor = () => {
                 </div>
                 <div className="flex items-center space-x-3">
                   <Check className="h-4 w-4 text-green-500" />
-                  <span className="text-sm">Image extraction</span>
+                  <span className="text-sm">Image detection</span>
                 </div>
                 <div className="flex items-center space-x-3">
                   <Check className="h-4 w-4 text-green-500" />
@@ -346,22 +436,7 @@ const PDFExtractor = () => {
                 </div>
                 <div className="flex items-center space-x-3">
                   <Check className="h-4 w-4 text-green-500" />
-                  <span className="text-sm">Secure processing</span>
-                </div>
-              </div>
-            </Card>
-
-            {/* Security Notice */}
-            <Card className="p-6 bg-green-50 border-green-200">
-              <div className="flex items-start space-x-3">
-                <div className="flex-shrink-0 w-6 h-6 bg-green-100 rounded-full flex items-center justify-center mt-0.5">
-                  <Check className="h-3 w-3 text-green-600" />
-                </div>
-                <div>
-                  <h4 className="font-medium text-green-900">Secure & Private</h4>
-                  <p className="text-sm text-green-700 mt-1">
-                    Your documents are automatically deleted after processing. We never store your files.
-                  </p>
+                  <span className="text-sm">Local processing</span>
                 </div>
               </div>
             </Card>
